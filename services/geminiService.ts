@@ -1,6 +1,7 @@
 
 import { GoogleGenAI, Modality } from "@google/genai";
 import { AspectRatio, ImageSize } from "../types";
+import { decryptData } from "../utils/crypto";
 
 export interface ImageInput {
   data: string;
@@ -8,25 +9,52 @@ export interface ImageInput {
 }
 
 /**
- * API 키의 유효성을 검사하고 GoogleGenAI 클라이언트를 생성합니다.
- * 시스템 기본값(Placeholder)이거나 빈 값인 경우 에러를 발생시켜 초기화를 차단합니다.
+ * 로컬 저장소 및 환경 변수에서 유효한 키를 가져옵니다.
  */
-const getAIClient = () => {
-  const apiKey = process.env.API_KEY;
+const getActiveKey = async (): Promise<string> => {
+  // 1. 커스텀 키 확인
+  const savedKey = localStorage.getItem('weeklygen_custom_key');
+  if (savedKey) {
+    const decrypted = await decryptData(savedKey);
+    if (decrypted && decrypted.length > 10) return decrypted;
+  }
   
-  // 가짜 키(Placeholder) 또는 빈 값 체크
+  // 2. 시스템 키 확인
+  const apiKey = process.env.API_KEY;
   const isInvalidKey = 
     !apiKey || 
     apiKey === "" || 
     apiKey.includes("UNUSED_PLACEHOLDER") || 
     apiKey === "undefined";
 
-  if (isInvalidKey) {
-    throw new Error("유효한 API 키가 선택되지 않았습니다. 하단의 'API 키 관리' 버튼을 클릭하여 유료 프로젝트의 키를 선택해주세요.");
+  if (isInvalidKey) return "";
+  return apiKey;
+};
+
+const getAIClient = async () => {
+  const apiKey = await getActiveKey();
+  if (!apiKey) {
+    throw new Error("API 키가 설정되지 않았습니다. API 키 관리에서 키를 입력하거나 선택해주세요.");
   }
-  
-  // 호출 시점에 신규 인스턴스 생성 (최신 키 반영 보장)
   return new GoogleGenAI({ apiKey });
+};
+
+/**
+ * API 키 연결 테스트를 수행합니다.
+ */
+export const testConnection = async (apiKey: string): Promise<boolean> => {
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: 'Ping',
+      config: { maxOutputTokens: 1 }
+    });
+    return !!response.text;
+  } catch (err) {
+    console.error('Connection test failed', err);
+    return false;
+  }
 };
 
 // Helper: Decode base64 to Uint8Array
@@ -64,7 +92,7 @@ export const generateSpeech = async (
   text: string,
   voiceName: string
 ): Promise<string> => {
-  const ai = getAIClient();
+  const ai = await getAIClient();
   
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash-preview-tts",
@@ -146,7 +174,7 @@ export const generateImage = async (
   backgroundImage?: ImageInput,
   baseImage?: ImageInput
 ): Promise<string> => {
-  const ai = getAIClient();
+  const ai = await getAIClient();
   const parts: any[] = [];
   if (baseImage) {
     parts.push({ inlineData: { data: baseImage.data.split(',')[1], mimeType: baseImage.mimeType } });
@@ -187,7 +215,7 @@ export const generateVideo = async (
   startImage?: ImageInput,
   endImage?: ImageInput
 ): Promise<string> => {
-  const ai = getAIClient();
+  const ai = await getAIClient();
   onStatusUpdate("영상을 요청 중입니다...");
   const videoConfig: any = { numberOfVideos: 1, resolution: '720p', aspectRatio: aspectRatio };
   if (endImage) videoConfig.lastFrame = { imageBytes: endImage.data.split(',')[1], mimeType: endImage.mimeType };
@@ -208,7 +236,7 @@ export const generateVideo = async (
   }
   
   const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-  const apiKey = process.env.API_KEY;
+  const apiKey = await getActiveKey();
   const response = await fetch(`${downloadLink}&key=${apiKey}`);
   const blob = await response.blob();
   return URL.createObjectURL(blob);
